@@ -1,6 +1,7 @@
 import enum
 import logging
 import socket
+import time
 
 from pytocl.car import State as CarState
 from pytocl.driver import Driver
@@ -36,6 +37,7 @@ class Client:
         self.serializer = serializer or Serializer()
         self.state = State.STOPPED
         self.socket = None
+        self.start_time = time.time()
 
         _logger.debug('Initializing {}.'.format(self))
 
@@ -107,7 +109,11 @@ class Client:
 
     def _process_server_msg(self):
         try:
+            now = time.time() - self.start_time
+            # print(f"{now=}")
+
             buffer, _ = self.socket.recvfrom(TO_SOCKET_MSEC)
+            # print(f"{buffer=}")
             _logger.debug('Received buffer {!r}.'.format(buffer))
 
             if not buffer:
@@ -123,13 +129,23 @@ class Client:
 
             else:
                 sensor_dict = self.serializer.decode(buffer)
+                print(f"{sensor_dict=}")
                 carstate = CarState(sensor_dict)
+                # print(f"{carstate=}")
                 _logger.debug(carstate)
 
+"""
+First step:
+    Ask the team what kind of events we're looking for from the raw telemetry data.
+    Consider training a regression model on the telemetry data if I have the data set for some event detection.
+    Ideally rule-based from the start.
+    Ask about an existing solution.
+"""
                 command = self.driver.drive(carstate)
 
                 _logger.debug(command)
                 buffer = self.serializer.encode(command.actuator_dict)
+                # print(f"{buffer=}")
                 _logger.debug('Sending buffer {!r}.'.format(buffer))
                 self.socket.sendto(buffer, self.hostaddr)
 
@@ -173,6 +189,8 @@ class Serializer:
 
         if prefix:
             elements.append(prefix)
+
+        # print(f"{data=}")
 
         for k, v in data.items():
             if v and v[0] is not None:
