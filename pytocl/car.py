@@ -1,5 +1,6 @@
 import logging
 import math
+import json
 from collections.abc import Iterable
 from functools import partialmethod
 
@@ -81,6 +82,10 @@ class State(Value):
         self.z = self.float_value(sensor_dict, 'z')
 
         self.focused_distances_from_edge = self.floats_value(sensor_dict, 'focus')
+
+    def __repr__(self):
+        """Used ONLY for debugging purposes."""
+        return json.dumps(self.__dict__)
 
     @property
     def distances_from_egde_valid(self):
