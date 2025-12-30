@@ -1,7 +1,7 @@
 import enum
 import logging
 import socket
-import time
+import json
 
 from pytocl.car import State as CarState
 from pytocl.driver import Driver
@@ -37,7 +37,9 @@ class Client:
         self.serializer = serializer or Serializer()
         self.state = State.STOPPED
         self.socket = None
-        self.start_time = time.time()
+        self._completed_laps = 0
+        self._last_cur_lap_time = 0.0
+        self._last_laps_accumulated_time = 0.0
 
         _logger.debug('Initializing {}.'.format(self))
 
@@ -109,9 +111,6 @@ class Client:
 
     def _process_server_msg(self):
         try:
-            now = time.time() - self.start_time
-            # print(f"{now=}")
-
             buffer, _ = self.socket.recvfrom(TO_SOCKET_MSEC)
             # print(f"{buffer=}")
             _logger.debug('Received buffer {!r}.'.format(buffer))
@@ -129,18 +128,27 @@ class Client:
 
             else:
                 sensor_dict = self.serializer.decode(buffer)
-                print(f"{sensor_dict=}")
                 carstate = CarState(sensor_dict)
-                # print(f"{carstate=}")
+
+                """
+                This following section of code is responsible for sampling from TORCS.
+                Ideally, we would like to sample this raw data at a frequency of 10hz (every 0.1s), and save it to a CSV file.
+                Additional parameters such as calculating the current timestamp and lap are crucial.
+                """
+                cur_lap_time = carstate.current_lap_time
+                last_lap_time = carstate.last_lap_time
+
+                if cur_lap_time < self._last_cur_lap_time - 0.5:
+                    self._completed_laps += 1
+                    self._last_laps_accumulated_time += last_lap_time
+                self._last_cur_lap_time = cur_lap_time
+
+                timestamp_now = cur_lap_time + self._last_laps_accumulated_time
+
+                current_lap = self._completed_laps + 1
+
                 _logger.debug(carstate)
 
-"""
-First step:
-    Ask the team what kind of events we're looking for from the raw telemetry data.
-    Consider training a regression model on the telemetry data if I have the data set for some event detection.
-    Ideally rule-based from the start.
-    Ask about an existing solution.
-"""
                 command = self.driver.drive(carstate)
 
                 _logger.debug(command)

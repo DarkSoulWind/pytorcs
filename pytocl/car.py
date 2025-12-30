@@ -1,5 +1,6 @@
 import logging
 import math
+import json
 from collections.abc import Iterable
 from functools import partialmethod
 
@@ -76,11 +77,15 @@ class State(Value):
         self.speed_z = self.float_value(sensor_dict, 'speedZ') * MPS_PER_KMH
         self.distances_from_edge = self.floats_value(sensor_dict, 'track')
         self.distance_from_center = self.float_value(sensor_dict, 'trackPos')
-        self.wheel_velocities = tuple(v * DEGREE_PER_RADIANS for v in
+        self.wheel_velocities: tuple[float, float, float, float] = tuple(v * DEGREE_PER_RADIANS for v in
                                       self.floats_value(sensor_dict, 'wheelSpinVel'))
         self.z = self.float_value(sensor_dict, 'z')
 
         self.focused_distances_from_edge = self.floats_value(sensor_dict, 'focus')
+
+    def __repr__(self):
+        """Used ONLY for debugging purposes."""
+        return json.dumps(self.__dict__)
 
     @property
     def distances_from_egde_valid(self):
@@ -100,10 +105,9 @@ class State(Value):
             _logger.warning('Expected sensor value {!r} not found.'.format(key))
             return None
 
-    float_value = partialmethod(converted_value, converter=float)
-    floats_value = partialmethod(converted_value, converter=lambda l: tuple(float(v) for v in l))
-    int_value = partialmethod(converted_value, converter=int)
-
+    float_value: partialmethod[float] = partialmethod(converted_value, converter=float)
+    floats_value: partialmethod[tuple] = partialmethod(converted_value, converter=lambda l: tuple(float(v) for v in l))
+    int_value: partialmethod[int] = partialmethod(converted_value, converter=int)
 
 class Command(Value):
     """Command to drive car during next control cycle.
