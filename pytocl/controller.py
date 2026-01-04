@@ -9,7 +9,8 @@ class Controller(abc.ABC):
 
     last_value = 0.0
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def shortname(self):
         """Short name of controller type to show in logs."""
 

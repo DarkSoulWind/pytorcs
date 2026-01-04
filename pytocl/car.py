@@ -14,7 +14,7 @@ class Value:
     """Base class for value objects."""
 
     def __str__(self):
-        return '\n'.join('{}: {}'.format(k, v) for k, v in self.__dict__.items())
+        return "\n".join("{}: {}".format(k, v) for k, v in self.__dict__.items())
 
     def chain(self, *attributes):
         """Attribute iterator, unpacking iterable attributes."""
@@ -61,27 +61,29 @@ class State(Value):
 
     def __init__(self, sensor_dict):
         """Creates decoded car state from sensor value dictionary."""
-        self.angle = self.float_value(sensor_dict, 'angle') * DEGREE_PER_RADIANS
-        self.current_lap_time = self.float_value(sensor_dict, 'curLapTime')
-        self.damage = self.int_value(sensor_dict, 'damage')
-        self.distance_from_start = self.float_value(sensor_dict, 'distFromStart')
-        self.distance_raced = self.float_value(sensor_dict, 'distRaced')
-        self.fuel = self.float_value(sensor_dict, 'fuel')
-        self.gear = self.int_value(sensor_dict, 'gear')
-        self.last_lap_time = self.float_value(sensor_dict, 'lastLapTime')
-        self.opponents = self.floats_value(sensor_dict, 'opponents')
-        self.race_position = self.int_value(sensor_dict, 'racePos')
-        self.rpm = self.float_value(sensor_dict, 'rpm')
-        self.speed_x = self.float_value(sensor_dict, 'speedX') * MPS_PER_KMH
-        self.speed_y = self.float_value(sensor_dict, 'speedY') * MPS_PER_KMH
-        self.speed_z = self.float_value(sensor_dict, 'speedZ') * MPS_PER_KMH
-        self.distances_from_edge = self.floats_value(sensor_dict, 'track')
-        self.distance_from_center = self.float_value(sensor_dict, 'trackPos')
-        self.wheel_velocities: tuple[float, float, float, float] = tuple(v * DEGREE_PER_RADIANS for v in
-                                      self.floats_value(sensor_dict, 'wheelSpinVel'))
-        self.z = self.float_value(sensor_dict, 'z')
+        self.angle = self.float_value(sensor_dict, "angle") * DEGREE_PER_RADIANS
+        self.current_lap_time = self.float_value(sensor_dict, "curLapTime")
+        self.damage = self.int_value(sensor_dict, "damage")
+        self.distance_from_start = self.float_value(sensor_dict, "distFromStart")
+        self.distance_raced = self.float_value(sensor_dict, "distRaced")
+        self.fuel = self.float_value(sensor_dict, "fuel")
+        self.gear = self.int_value(sensor_dict, "gear")
+        self.last_lap_time = self.float_value(sensor_dict, "lastLapTime")
+        self.opponents = self.floats_value(sensor_dict, "opponents")
+        self.race_position = self.int_value(sensor_dict, "racePos")
+        self.rpm = self.float_value(sensor_dict, "rpm")
+        self.speed_x = self.float_value(sensor_dict, "speedX") * MPS_PER_KMH
+        self.speed_y = self.float_value(sensor_dict, "speedY") * MPS_PER_KMH
+        self.speed_z = self.float_value(sensor_dict, "speedZ") * MPS_PER_KMH
+        self.distances_from_edge = self.floats_value(sensor_dict, "track")
+        self.distance_from_center = self.float_value(sensor_dict, "trackPos")
+        self.wheel_velocities: tuple[float, float, float, float] = tuple(
+            v * DEGREE_PER_RADIANS
+            for v in self.floats_value(sensor_dict, "wheelSpinVel")
+        )
+        self.z = self.float_value(sensor_dict, "z")
 
-        self.focused_distances_from_edge = self.floats_value(sensor_dict, 'focus')
+        self.focused_distances_from_edge = self.floats_value(sensor_dict, "focus")
 
     def __repr__(self):
         """Used ONLY for debugging purposes."""
@@ -102,12 +104,15 @@ class State(Value):
         try:
             return converter(sensor_dict[key])
         except (ValueError, KeyError):
-            _logger.warning('Expected sensor value {!r} not found.'.format(key))
+            _logger.warning("Expected sensor value {!r} not found.".format(key))
             return None
 
-    float_value: partialmethod[float] = partialmethod(converted_value, converter=float)
-    floats_value: partialmethod[tuple] = partialmethod(converted_value, converter=lambda l: tuple(float(v) for v in l))
+    float_value: partialmethod = partialmethod(converted_value, converter=float)
+    floats_value: partialmethod[tuple] = partialmethod(
+        converted_value, converter=lambda l: tuple(float(v) for v in l)
+    )
     int_value: partialmethod[int] = partialmethod(converted_value, converter=int)
+
 
 class Command(Value):
     """Command to drive car during next control cycle.
@@ -138,5 +143,5 @@ class Command(Value):
             steer=[self.steering],
             clutch=[0],  # server car does not need clutch control?
             focus=[self.focus],
-            meta=[0]  # no support for server restart via meta=1
+            meta=[0],  # no support for server restart via meta=1
         )
