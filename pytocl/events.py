@@ -1,5 +1,5 @@
-
 """Code to detect events from telemetry samples."""
+
 from __future__ import annotations
 
 import argparse
@@ -81,7 +81,9 @@ def _falling_edge(flag: pd.Series) -> pd.Series:
     return ~flag & flag.shift(1, fill_value=False)
 
 
-def _min_sector_distance(values: Optional[Tuple[float, ...]], indices: List[int]) -> float:
+def _min_sector_distance(
+    values: Optional[Tuple[float, ...]], indices: List[int]
+) -> float:
     if not values:
         return float("inf")
     size = len(values)
@@ -248,7 +250,9 @@ def detect_events(
     dt = df["timestamp"].diff().fillna(0).clip(lower=0.0)
 
     if {"speed_x", "speed_y", "speed_z"}.issubset(df.columns):
-        df["speed"] = (df["speed_x"] ** 2 + df["speed_y"] ** 2 + df["speed_z"] ** 2) ** 0.5
+        df["speed"] = (
+            df["speed_x"] ** 2 + df["speed_y"] ** 2 + df["speed_z"] ** 2
+        ) ** 0.5
     elif "speed_x" in df.columns:
         df["speed"] = df["speed_x"].abs()
     else:
@@ -258,7 +262,9 @@ def detect_events(
     rpm_delta = df["rpm"].diff().fillna(0)
 
     if "distance_from_start" in df.columns:
-        df["dist_from_start_m"] = pd.to_numeric(df["distance_from_start"], errors="coerce")
+        df["dist_from_start_m"] = pd.to_numeric(
+            df["distance_from_start"], errors="coerce"
+        )
     elif "distance_raced" in df.columns:
         df["dist_from_start_m"] = pd.to_numeric(df["distance_raced"], errors="coerce")
     else:
@@ -276,7 +282,9 @@ def detect_events(
 
     if "dist_from_start_m" in df.columns and df["dist_from_start_m"].notna().any():
         track_length = df["dist_from_start_m"].max()
-        sector_length = track_length / 3.0 if track_length and track_length > 0 else None
+        sector_length = (
+            track_length / 3.0 if track_length and track_length > 0 else None
+        )
         if sector_length:
             sector_float = (df["dist_from_start_m"] / sector_length).clip(lower=0)
             sector_index = sector_float.apply(
@@ -327,22 +335,32 @@ def detect_events(
         events += _emit_events(df, _falling_edge(cornering), Event.CORNER_EXIT)
 
     if "distance_from_center" in df.columns:
-        df["distance_from_center"] = pd.to_numeric(df["distance_from_center"], errors="coerce")
+        df["distance_from_center"] = pd.to_numeric(
+            df["distance_from_center"], errors="coerce"
+        )
         off_track = df["distance_from_center"].abs() > 1.0
         warning = df["distance_from_center"].abs().between(0.9, 1.0, inclusive="left")
-        running_wide = (
-            df["distance_from_center"].abs() > 0.9
-        ) & (df["distance_from_center"].abs().diff().fillna(0) > 0)
+        running_wide = (df["distance_from_center"].abs() > 0.9) & (
+            df["distance_from_center"].abs().diff().fillna(0) > 0
+        )
         events += _emit_events(df, _rising_edge(warning), Event.TRACK_LIMITS_WARNING)
         events += _emit_events(df, _rising_edge(off_track), Event.OFF_TRACK)
         events += _emit_events(df, _rising_edge(running_wide), Event.RUNNING_WIDE)
     else:
         off_track = pd.Series(False, index=df.index)
 
-    slide = (df["speed_y"].abs() >= 3.0) & (df["speed"] >= 5.0) if "speed_y" in df.columns else pd.Series(False, index=df.index)
+    slide = (
+        (df["speed_y"].abs() >= 3.0) & (df["speed"] >= 5.0)
+        if "speed_y" in df.columns
+        else pd.Series(False, index=df.index)
+    )
     events += _emit_events(df, _rising_edge(slide), Event.SLIDE)
 
-    spin = (df["angle"].abs() >= 1.2) & (df["speed"] >= 2.0) if "angle" in df.columns else pd.Series(False, index=df.index)
+    spin = (
+        (df["angle"].abs() >= 1.2) & (df["speed"] >= 2.0)
+        if "angle" in df.columns
+        else pd.Series(False, index=df.index)
+    )
     events += _emit_events(df, _rising_edge(spin), Event.SPIN)
 
     recovery = _falling_edge(off_track | slide | spin)
@@ -355,14 +373,24 @@ def detect_events(
             sample = ()
         if sample:
             front_idx, rear_idx, side_idx = _opponent_sector_ranges(len(sample))
-            front_min = opponents.apply(lambda vals: _min_sector_distance(vals, front_idx))
-            rear_min = opponents.apply(lambda vals: _min_sector_distance(vals, rear_idx))
-            side_min = opponents.apply(lambda vals: _min_sector_distance(vals, side_idx))
+            front_min = opponents.apply(
+                lambda vals: _min_sector_distance(vals, front_idx)
+            )
+            rear_min = opponents.apply(
+                lambda vals: _min_sector_distance(vals, rear_idx)
+            )
+            side_min = opponents.apply(
+                lambda vals: _min_sector_distance(vals, side_idx)
+            )
             car_ahead_close = front_min < 10.0
             car_behind_close = rear_min < 10.0
             side_by_side = side_min < 5.0
-            events += _emit_events(df, _rising_edge(car_ahead_close), Event.CAR_AHEAD_CLOSE)
-            events += _emit_events(df, _rising_edge(car_behind_close), Event.CAR_BEHIND_CLOSE)
+            events += _emit_events(
+                df, _rising_edge(car_ahead_close), Event.CAR_AHEAD_CLOSE
+            )
+            events += _emit_events(
+                df, _rising_edge(car_behind_close), Event.CAR_BEHIND_CLOSE
+            )
             events += _emit_events(df, _rising_edge(side_by_side), Event.SIDE_BY_SIDE)
 
     if "race_position" in df.columns:
@@ -407,7 +435,9 @@ def detect_events(
             ]
         )
 
-    events_df = pd.DataFrame(events).dropna(subset=["timestamp"]).sort_values("timestamp")
+    events_df = (
+        pd.DataFrame(events).dropna(subset=["timestamp"]).sort_values("timestamp")
+    )
     enriched = df.loc[events_df.index].copy()
     events_df = events_df.reset_index(drop=True)
     enriched = enriched.reset_index(drop=True)
@@ -418,7 +448,11 @@ def detect_events(
         events_df["event"],
         enriched.get("longitudinal_accel", pd.Series(0, index=enriched.index)),
         enriched.get("angle", pd.Series(0, index=enriched.index)),
-        off_track if isinstance(off_track, pd.Series) else pd.Series(False, index=enriched.index),
+        (
+            off_track
+            if isinstance(off_track, pd.Series)
+            else pd.Series(False, index=enriched.index)
+        ),
     ):
         base = _base_severity(event)
         if event in (Event.HARD_BRAKING, Event.STRONG_ACCELERATION):
