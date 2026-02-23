@@ -36,6 +36,7 @@ class Event(Enum):
     OVERTAKE = "Overtake"
     BEING_OVERTAKEN = "BeingOvertaken"
     SIDE_BY_SIDE = "SideBySide"
+    WALL_IMPACT = "WallImpact"
     CONTACT = "Contact"
     DAMAGE_EVENT = "DamageEvent"
     STOPPED = "Stopped"
@@ -135,6 +136,7 @@ def _base_severity(event: Event) -> float:
         Event.OVERTAKE: 0.7,
         Event.BEING_OVERTAKEN: 0.7,
         Event.SIDE_BY_SIDE: 0.6,
+        Event.WALL_IMPACT: 1.0,
         Event.CONTACT: 1.0,
         Event.DAMAGE_EVENT: 1.0,
         Event.STOPPED: 0.5,
@@ -146,6 +148,7 @@ def _event_priority(event: Event) -> int:
     return {
         Event.CONTACT: 100,
         Event.DAMAGE_EVENT: 100,
+        Event.WALL_IMPACT: 99,
         Event.SPIN: 95,
         Event.OFF_TRACK: 90,
         Event.STUCK: 85,
@@ -298,6 +301,9 @@ def detect_events(
         df["sector"] = pd.NA
 
     events: List[dict] = []
+    car_ahead_close = pd.Series(False, index=df.index)
+    car_behind_close = pd.Series(False, index=df.index)
+    side_by_side = pd.Series(False, index=df.index)
 
     if "current_lap" in df.columns:
         lap_change = df["current_lap"].diff().fillna(0) > 0
@@ -403,6 +409,30 @@ def detect_events(
         damage_event = damage_delta > 0
         events += _emit_events(df, damage_event, Event.CONTACT)
         events += _emit_events(df, damage_event, Event.DAMAGE_EVENT)
+    else:
+        damage_event = pd.Series(False, index=df.index)
+
+    speed_decel = df["speed"].diff().fillna(0) / dt.replace(0, 1)
+    hard_impact = (speed_decel <= -10.0) | (df["longitudinal_accel"] <= -8.0)
+
+    if "distance_from_center" in df.columns:
+        near_wall_by_center = df["distance_from_center"].abs() >= 0.95
+    else:
+        near_wall_by_center = pd.Series(False, index=df.index)
+
+    edge_distances = _parse_tuple_column(df, "distances_from_edge")
+    if edge_distances is not None:
+        min_edge_distance = edge_distances.apply(
+            lambda values: min(values) if values else float("inf")
+        )
+        near_wall_by_edge = min_edge_distance <= 1.5
+    else:
+        near_wall_by_edge = pd.Series(False, index=df.index)
+
+    wall_context = off_track | near_wall_by_center | near_wall_by_edge
+    close_opponent = car_ahead_close | car_behind_close | side_by_side
+    wall_impact = hard_impact & wall_context & (~close_opponent | damage_event)
+    events += _emit_events(df, _rising_edge(wall_impact), Event.WALL_IMPACT)
 
     stopped = df["speed"] < 0.5
     events += _emit_events(df, _rising_edge(stopped), Event.STOPPED)

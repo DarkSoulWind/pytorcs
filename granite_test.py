@@ -103,14 +103,20 @@ llm = Llama(model_path=model_path, n_ctx=2048)
 # result = out["choices"][0]["message"]["content"].strip()
 # print(f"{result=}")
 
-# # --- Aggregated event burst pipeline (below line 106) ---
-
 import csv
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
+import re
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Any
+import random
 
 
-@dataclass
+# =========================
+# Data model
+# =========================
+
+
+@dataclass(frozen=True)
 class Event:
     event_type: str
     severity: float
@@ -126,497 +132,652 @@ class Event:
     longitudinal_accel_mps2: float
 
 
+@dataclass(frozen=True)
+class NarrativeState:
+    pressure_level: float = 0.0  # 0..1
+    threat_level: float = 0.0  # 0..1
+    instability_recent: float = 0.0  # 0..1, decays
+    momentum: int = 0  # -2..+2
+    recovery_streak: int = 0
+    last_dominant_event: str = ""
+    last_opener: str = ""
+
+
+# =========================
+# CSV utils
+# =========================
+
+
+def _get(row: Dict[str, str], key: str, default: str = "") -> str:
+    v = row.get(key, "")
+    return v if v is not None and v != "" else default
+
+
+def _to_float(s: str, default: float = 0.0) -> float:
+    try:
+        return float(s)
+    except Exception:
+        return default
+
+
+def _to_int(s: str, default: int = 0) -> int:
+    try:
+        return int(float(s))
+    except Exception:
+        return default
+
+
 def read_events_csv(path: str) -> List[Event]:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"CSV not found: {p.resolve()}")
+
     events: List[Event] = []
-    with open(path, newline="") as f:
+    with p.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
+        required = {
+            "event_type",
+            "severity",
+            "confidence",
+            "timestamp_s",
+            "lap",
+            "sector",
+            "dist_from_start_m",
+            "track_pos",
+            "speed_mps",
+            "rpm",
+            "gear",
+            "longitudinal_accel_mps2",
+        }
+        missing = [c for c in required if c not in (reader.fieldnames or [])]
+        if missing:
+            raise ValueError(f"Missing required columns: {missing}")
+
         for row in reader:
+            et = _get(row, "event_type").strip()
+            if not et:
+                continue
+
             events.append(
                 Event(
-                    event_type=row["event_type"],
-                    severity=float(row["severity"]),
-                    confidence=float(row["confidence"]),
-                    timestamp_s=float(row["timestamp_s"]),
-                    lap=int(float(row["lap"])),
-                    sector=int(float(row["sector"])),
-                    dist_from_start_m=float(row["dist_from_start_m"]),
-                    track_pos=float(row["track_pos"]),
-                    speed_mps=float(row["speed_mps"]),
-                    rpm=float(row["rpm"]),
-                    gear=int(float(row["gear"])),
-                    longitudinal_accel_mps2=float(
-                        row["longitudinal_accel_mps2"] or 0.0
+                    event_type=et,
+                    severity=_to_float(_get(row, "severity"), 0.0),
+                    confidence=_to_float(_get(row, "confidence"), 0.0),
+                    timestamp_s=_to_float(_get(row, "timestamp_s"), 0.0),
+                    lap=_to_int(_get(row, "lap"), 0),
+                    sector=_to_int(_get(row, "sector"), 0),
+                    dist_from_start_m=_to_float(_get(row, "dist_from_start_m"), 0.0),
+                    track_pos=_to_float(_get(row, "track_pos"), 0.0),
+                    speed_mps=_to_float(_get(row, "speed_mps"), 0.0),
+                    rpm=_to_float(_get(row, "rpm"), 0.0),
+                    gear=_to_int(_get(row, "gear"), 0),
+                    longitudinal_accel_mps2=_to_float(
+                        _get(row, "longitudinal_accel_mps2"), 0.0
                     ),
                 )
             )
-    return events
+
+    return sorted(events, key=lambda e: e.timestamp_s)
 
 
-def pick_headline_metric(ev: Event) -> str:
-    # You choose the metric; don't let the model "pick".
-    speed_kmh = ev.speed_mps * 3.6
-    if ev.event_type in ("SPIN", "OFFTRACK", "LOCKUP"):
-        return f"speed_kmh={speed_kmh:.0f}"
-    return f"rpm={int(round(ev.rpm/100)*100)}"
+# =========================
+# Burst windowing
+# =========================
 
 
-def format_event_compact(ev: Event) -> str:
-    return (
-        f"type={ev.event_type} sev={ev.severity:.2f} conf={ev.confidence:.2f} "
-        f"{pick_headline_metric(ev)} gear={ev.gear}"
-    )
-
-
-def group_events_by_time(
-    events: List[Event], max_gap_s: float = 5.0, max_events_per_burst: int = 3
+def group_events_by_window(
+    events: List[Event],
+    window_s: float = 4.0,
+    max_gap_s: float = 1.5,
+    max_events_per_window: int = 25,
 ) -> List[List[Event]]:
     if not events:
         return []
-    events_sorted = sorted(events, key=lambda e: e.timestamp_s)
-    bursts: List[List[Event]] = []
-    current: List[Event] = [events_sorted[0]]
 
-    for ev in events_sorted[1:]:
-        gap = ev.timestamp_s - current[-1].timestamp_s
-        if gap <= max_gap_s and len(current) < max_events_per_burst:
-            current.append(ev)
+    bursts: List[List[Event]] = []
+    cur: List[Event] = [events[0]]
+    start_t = events[0].timestamp_s
+
+    for ev in events[1:]:
+        gap = ev.timestamp_s - cur[-1].timestamp_s
+        within_window = (ev.timestamp_s - start_t) <= window_s
+        ok_gap = gap <= max_gap_s
+        ok_count = len(cur) < max_events_per_window
+
+        if within_window and ok_gap and ok_count:
+            cur.append(ev)
         else:
-            bursts.append(current)
-            current = [ev]
-    bursts.append(current)
+            bursts.append(cur)
+            cur = [ev]
+            start_t = ev.timestamp_s
+
+    bursts.append(cur)
     return bursts
 
 
-def summarize_burst_window(burst: List[Event]) -> Tuple[str, Dict[str, float]]:
-    times = [e.timestamp_s for e in burst]
-    laps = [e.lap for e in burst]
-    sectors = [e.sector for e in burst]
-    dists = [e.dist_from_start_m for e in burst]
-    tpos = [e.track_pos for e in burst]
-    return (
-        f"Burst window: time {min(times):.2f} to {max(times):.2f} "
-        f"(dt {max(times)-min(times):.2f}), "
-        f"lap {min(laps)}, sector {min(sectors)}, "
-        f"distance {min(dists):.2f} to {max(dists):.2f}, "
-        f"track_pos {min(tpos):.2f}-{max(tpos):.2f}.",
-        {"t_start": min(times), "t_end": max(times)},
-    )
+# =========================
+# Semantics layer
+# =========================
 
 
-def format_event_line(ev: Event) -> str:
+INCIDENT_EVENTS = {"SPIN", "OFFTRACK", "LOCKUP", "HARD_BRAKING"}
+PRESSURE_EVENTS = {"BEING_OVERTAKEN", "CAR_AHEAD_CLOSE"}
+RECOVERY_EVENTS = {"STRONG_ACCELERATION", "UPSHIFT"}
+THREAT_EVENTS = {"BEING_OVERTAKEN", "CAR_AHEAD_CLOSE"}
+
+DRAMA_PHRASES = ("big moment", "massive scare")
+HEDGE_PHRASES = ("looks like", "might have")
+
+
+def _unique_preserve(xs: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for x in xs:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def event_tags(ev: Event) -> List[str]:
+    et = ev.event_type.upper()
+    tags: List[str] = [et.lower().replace("_", " ")]
+
+    if ev.confidence < 0.35:
+        tags.append("very low confidence")
+    elif ev.confidence < 0.60:
+        tags.append("low confidence")
+
+    if ev.severity >= 0.85:
+        tags.append("very high severity")
+    elif ev.severity >= 0.70:
+        tags.append("high severity")
+
+    if et in PRESSURE_EVENTS:
+        tags.append("pressure")
+
+    if et in RECOVERY_EVENTS:
+        tags.append("fightback")
+
+    if et in INCIDENT_EVENTS:
+        tags.append("instability")
+
+    if abs(ev.track_pos) > 0.8:
+        tags.append("near the edge")
+
+    return tags
+
+
+def choose_headline_metric(ev: Event) -> str:
+    et = ev.event_type.upper()
     speed_kmh = ev.speed_mps * 3.6
-    # Reduce numeric precision to feel more like human commentary.
-    rpm_rounded = int(round(ev.rpm / 100.0) * 100)
-    speed_rounded = round(speed_kmh, 1)
-    time_rounded = round(ev.timestamp_s, 1)
+
+    if et in INCIDENT_EVENTS or speed_kmh < 30:
+        v = int(round(speed_kmh / 10.0) * 10)
+        return f"{max(v, 0)} km/h"
+
+    r = int(round(ev.rpm / 500.0) * 500)
+    if r <= 0:
+        v = int(round(speed_kmh / 10.0) * 10)
+        return f"{max(v, 0)} km/h"
+    return f"{r} rpm"
+
+
+def burst_spec(burst: List[Event]) -> Dict[str, Any]:
+    dominant = max(burst, key=lambda e: (e.severity, e.timestamp_s))
+    dominant_et = dominant.event_type.upper()
+
+    confs = sorted(e.confidence for e in burst)
+    median_conf = confs[len(confs) // 2] if confs else 0.0
+
+    # Hedge rule improved: hedge only if the whole window is shaky.
+    needs_hedge = (dominant.confidence < 0.35) and (median_conf < 0.50)
+    soft_hedge = (not needs_hedge) and (median_conf < 0.60)
+
+    incident_like = dominant_et in INCIDENT_EVENTS
+    needs_drama = incident_like and (dominant.severity >= 0.70)
+
+    pressure = any(e.event_type.upper() in PRESSURE_EVENTS for e in burst)
+    threat = any(e.event_type.upper() in THREAT_EVENTS for e in burst)
+    recovery = any(e.event_type.upper() in RECOVERY_EVENTS for e in burst)
+    instability = any(e.event_type.upper() in INCIDENT_EVENTS for e in burst)
+
+    tags: List[str] = []
+    for ev in burst:
+        tags.extend(event_tags(ev))
+    tags = _unique_preserve(tags)
+
+    headline = choose_headline_metric(dominant)
+    types_seq = [e.event_type.upper() for e in burst]
+    compact_seq = " > ".join(_unique_preserve(types_seq)[:6])
+
+    return {
+        "dominant_event": dominant_et,
+        "needs_hedge": needs_hedge,
+        "soft_hedge": soft_hedge,
+        "needs_drama": needs_drama,
+        "pressure": pressure,
+        "threat": threat,
+        "recovery": recovery,
+        "instability": instability,
+        "headline": headline,
+        "tags": tags[:12],
+        "sequence": compact_seq,
+        "count": len(burst),
+    }
+
+
+# =========================
+# Narrative state update
+# =========================
+
+
+def clamp01(x: float) -> float:
+    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+
+
+def update_state(state: NarrativeState, spec: Dict[str, Any]) -> NarrativeState:
+    pressure = 1.0 if spec["pressure"] else 0.0
+    threat = 1.0 if spec["threat"] else 0.0
+    instability = 1.0 if spec["instability"] else 0.0
+    recovery = 1.0 if spec["recovery"] else 0.0
+
+    new_pressure = clamp01(
+        state.pressure_level * 0.78 + 0.35 * pressure + 0.10 * threat
+    )
+    new_threat = clamp01(state.threat_level * 0.80 + 0.40 * threat)
+    new_instability = clamp01(state.instability_recent * 0.72 + 0.55 * instability)
+
+    mom = state.momentum
+    if instability:
+        mom -= 1
+    if recovery and (pressure or threat):
+        mom += 1
+    mom = max(-2, min(2, mom))
+
+    rec_streak = state.recovery_streak
+    if recovery and not instability:
+        rec_streak += 1
+    else:
+        rec_streak = max(0, rec_streak - 1)
+
+    return replace(
+        state,
+        pressure_level=new_pressure,
+        threat_level=new_threat,
+        instability_recent=new_instability,
+        momentum=mom,
+        recovery_streak=rec_streak,
+        last_dominant_event=str(spec["dominant_event"]),
+    )
+
+
+def state_tags(state: NarrativeState) -> List[str]:
+    tags: List[str] = []
+    if state.instability_recent >= 0.55:
+        tags.append("shaky")
+    if state.threat_level >= 0.55:
+        tags.append("under threat")
+    if state.pressure_level >= 0.55:
+        tags.append("under pressure")
+    if state.momentum <= -1:
+        tags.append("on the back foot")
+    if state.momentum >= 1:
+        tags.append("finding rhythm")
+    if state.recovery_streak >= 2:
+        tags.append("fightback building")
+    return tags
+
+
+# =========================
+# EA-ish line library (upgraded)
+# =========================
+
+LINE_LIBRARY: Dict[str, List[str]] = {
+    "SPIN": [
+        "{HEDGE} the rear snaps loose, the car rotates; {DRAMA} at {METRIC}.",
+        "{HEDGE} big slide, catches it late; {DRAMA} at {METRIC}.",
+        "{HEDGE} the car loops it, scrabbles for grip; {DRAMA} at {METRIC}.",
+    ],
+    "HARD_BRAKING": [
+        "{HEDGE} late on the brakes, a twitch on entry; gathers it at {METRIC}.",
+        "{HEDGE} heavy braking, front tyres protest; still makes it at {METRIC}.",
+    ],
+    "LOCKUP": [
+        "{HEDGE} locks up into the corner, smoke and squeal; holds it at {METRIC}.",
+        "{HEDGE} brief lockup, runs it tight; keeps control at {METRIC}.",
+    ],
+    "OFFTRACK": [
+        "{HEDGE} runs wide to the edge, dusty line; rescues it at {METRIC}.",
+        "{HEDGE} near the edge, skips over the dirt; survives at {METRIC}.",
+    ],
+    "BEING_OVERTAKEN": [
+        "{HEDGE} under attack, moves once and holds firm; just hangs on at {METRIC}.",
+        "{HEDGE} squeezed hard, defends cleanly; keeps it straight at {METRIC}.",
+        "{HEDGE} threat looming, traction scrappy; stays in it at {METRIC}.",
+    ],
+    "CAR_AHEAD_CLOSE": [
+        "{HEDGE} right on the tail, the car wriggles; pressure rises at {METRIC}.",
+        "{HEDGE} closing rapidly, commits late; keeps it tidy at {METRIC}.",
+        "{HEDGE} nose-to-tail, tiny wobble mid-corner; stays composed at {METRIC}.",
+    ],
+    "STRONG_ACCELERATION": [
+        "{HEDGE} traction bites, the car fires out; builds momentum at {METRIC}.",
+        "{HEDGE} clean exit, gets it rotated early; surges at {METRIC}.",
+        "{HEDGE} hooks up the power, straightens it fast; charges at {METRIC}.",
+    ],
+    "UPSHIFT": [
+        "{HEDGE} clicks up cleanly, keeps it balanced; settles at {METRIC}.",
+        "{HEDGE} short-shifts to calm it down; stays neat at {METRIC}.",
+    ],
+}
+
+FALLBACK_LIBRARY = [
+    "{HEDGE} tense moment, the car keeps it tidy; holds on at {METRIC}.",
+    "{HEDGE} scrappy phase, fighting the balance; survives at {METRIC}.",
+    "{HEDGE} pressure builds, tiny correction; stays straight at {METRIC}.",
+]
+
+
+def pick_skeleton(spec: Dict[str, Any], state: NarrativeState) -> str:
+    dom = str(spec["dominant_event"])
+    candidates = LINE_LIBRARY.get(dom, FALLBACK_LIBRARY)
+
+    # Gentle bias using narrative state
+    if state.threat_level >= 0.65 and dom not in INCIDENT_EVENTS:
+        candidates = candidates + [
+            "{HEDGE} still under pressure, the car hangs tough; holds it at {METRIC}.",
+            "{HEDGE} threat all around, keeps it clean; survives at {METRIC}.",
+        ]
+    if state.instability_recent >= 0.65 and dom not in INCIDENT_EVENTS:
+        candidates = candidates + [
+            "{HEDGE} still shaky, the rear feels loose; calms it at {METRIC}.",
+            "{HEDGE} fighting grip, tiny slide again; steadies it at {METRIC}.",
+        ]
+    if state.recovery_streak >= 2:
+        candidates = candidates + [
+            "{HEDGE} fightback building, gets traction down; pushes on at {METRIC}.",
+        ]
+
+    return random.choice(candidates)
+
+
+def render_skeleton(spec: Dict[str, Any], skeleton: str) -> str:
+    hedge_required = bool(spec["needs_hedge"])
+    soft_hedge = bool(spec["soft_hedge"])
+    drama_required = bool(spec["needs_drama"])
+
+    hedge = ""
+    if hedge_required:
+        hedge = random.choice(HEDGE_PHRASES)
+    elif soft_hedge and random.random() < 0.35:
+        hedge = random.choice(HEDGE_PHRASES)
+
+    drama = ""
+    if drama_required:
+        drama = random.choice(DRAMA_PHRASES)
+
+    text = skeleton
+    text = text.replace("{HEDGE}", (hedge + " ") if hedge else "")
+    text = text.replace("{DRAMA}", drama if drama else "")
+    text = text.replace("{METRIC}", str(spec["headline"]))
+
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    text = re.sub(r"\s+([.;,])", r"\1", text)
+    text = text.replace(" ;", ";").replace(" .", ".").replace(" ,", ",")
+    return text
+
+
+# =========================
+# Prompting
+# =========================
+
+SYSTEM_PROMPT = """
+You are an F1-style live race commentator: short, sharp, punchy.
+You are rewriting a draft line into natural broadcast cadence.
+
+Output ONE sentence only, 12–22 words, present tense.
+Max TWO clauses. Periods or semicolons are fine; commas are allowed.
+NO quotes. NO exclamation marks.
+
+Use exactly ONE number only, and it MUST be the given headline metric.
+Do NOT start the line with the number.
+
+Never invent: positions, penalties, pits, fans, the pack, lap records.
+No driver/team names; use "the car" only.
+
+If Hedge required is True: include exactly one hedge phrase: "looks like" or "might have".
+If Hedge required is False but Soft hedge is True: hedging is optional, do not force it.
+
+If Drama required is True: include exactly one dramatic phrase: "big moment" or "massive scare".
+If Drama required is False: do not include those phrases.
+""".strip()
+
+
+def build_prompt(
+    spec: Dict[str, Any],
+    state: NarrativeState,
+    draft_line: str,
+    recent_openers: List[str],
+) -> str:
+    avoid = ", ".join([o for o in recent_openers[-3:] if o]) or "none"
+    s_tags = ", ".join(state_tags(state)) or "neutral"
+
     return (
-        f"{ev.event_type} severity={ev.severity:.2f} confidence={ev.confidence:.2f} "
-        f"at time={time_rounded:.1f}, speed={speed_rounded:.1f}, "
-        f"rpm={rpm_rounded}, gear={ev.gear}, accel={ev.longitudinal_accel_mps2:.2f}"
+        f"Window summary: {spec['sequence']} (events={spec['count']})\n"
+        f"Context tags: {', '.join(spec['tags'])}\n"
+        f"Narrative state: {s_tags}\n"
+        f"Dominant event: {spec['dominant_event']}\n"
+        f"Headline metric (ONLY number): {spec['headline']}\n"
+        f"Hedge required: {spec['needs_hedge']}\n"
+        f"Soft hedge: {spec['soft_hedge']}\n"
+        f"Drama required: {spec['needs_drama']}\n"
+        f"Avoid reusing these opening words: {avoid}\n"
+        f"Draft line to rewrite:\n{draft_line}\n"
+        "Task: Rewrite the draft into natural F1 cadence while obeying every rule."
     )
 
 
-def build_burst_prompt(burst: List[Event], burst_index: int) -> str:
-    # Provide a varied style palette to reduce repetitive openings.
-    moods = [
-        "tense and clinical",
-        "urgent and punchy",
-        "measured then explosive",
-        "calm with a sharp twist",
-        "tight and breathless",
-        "focused and precise",
+# =========================
+# Validation + anti-repetition
+# =========================
+
+
+def _words(text: str) -> List[str]:
+    return re.findall(r"\b[\w']+\b", text.lower())
+
+
+def line_opener(text: str, n: int = 3) -> str:
+    w = _words(text)
+    return " ".join(w[:n]) if w else ""
+
+
+def validate_line(
+    text: str,
+    spec: Dict[str, Any],
+    recent_lines: List[str],
+) -> Tuple[bool, str]:
+    t = text.strip()
+
+    # Hard bans (commas allowed now)
+    if any(q in t for q in ['"', "“", "”", "’", "‘"]):
+        return False, "contains quotes"
+    if "!" in t:
+        return False, "contains exclamation"
+
+    # One sentence-ish: allow at most one period; semicolons ok
+    if t.count(".") > 1:
+        return False, "too many sentences"
+
+    # Word count: wider so it can breathe
+    w = re.findall(r"\b[\w']+\b", t)
+    if not (12 <= len(w) <= 22):
+        return False, f"word count {len(w)}"
+
+    # Exactly one number
+    nums = re.findall(r"\d+(?:\.\d+)?", t)
+    if len(nums) != 1:
+        return False, f"number count {len(nums)}"
+
+    # Must include the headline metric verbatim
+    headline = str(spec["headline"])
+    if headline not in t:
+        return False, "missing headline metric"
+
+    # Must not start with a number
+    if re.match(r"^\s*\d", t):
+        return False, "starts with a number"
+
+    # Hedge rules
+    needs_hedge = bool(spec["needs_hedge"])
+    soft_hedge = bool(spec["soft_hedge"])
+    has_looks = "looks like" in t.lower()
+    has_might = "might have" in t.lower()
+    hedge_count = int(has_looks) + int(has_might)
+
+    if needs_hedge:
+        if hedge_count != 1:
+            return False, "hedge required but missing or multiple"
+    else:
+        if not soft_hedge and hedge_count > 0:
+            return False, "hedge used when not allowed"
+
+    # Drama rules
+    needs_drama = bool(spec["needs_drama"])
+    drama_hits = sum(1 for p in DRAMA_PHRASES if p in t.lower())
+    if needs_drama:
+        if drama_hits != 1:
+            return False, "drama required but missing or multiple"
+    else:
+        if drama_hits > 0:
+            return False, "drama used when not allowed"
+
+    # Anti-repetition: opening pattern
+    opener = line_opener(t, 3)
+    recent_openers = [line_opener(x, 3) for x in recent_lines[-3:]]
+    if opener and opener in recent_openers:
+        return False, "repeated opener"
+
+    # Phrase fatigue bans (stops your “under threat; hangs on…” spam)
+    fatigue_phrases = [
+        "under threat",
+        "hangs on",
+        "tries to calm",
+        "closing fast",
+        "pressure rises",
+        "stays composed",
+        "keeps it tidy",
     ]
-    verbs = [
-        "clips",
-        "wriggles",
-        "hooks",
-        "snaps",
-        "clatters",
-        "stabs",
-        "surges",
-        "lunges",
-        "scrubs",
-        "skips",
-    ]
-    forbidden_openers = [
-        "Breath-held moment",
-        "Sudden jolt",
-        "Split-second scare",
-        "Calm then chaos",
-        "Momentum shift",
-        "Massive",
-        "Big",
-        "Major",
-    ]
-    header, _ = summarize_burst_window(burst)
-    # Sort by severity (desc), tie-break by timestamp for stable ordering.
-    ordered = sorted(burst, key=lambda e: (-e.severity, e.timestamp_s))
-    lines = [format_event_line(ev) for ev in ordered]
-    # Provide explicit style constraints to avoid generic repetition and name invention.
-    style = (
-        f"Mood: {moods[burst_index % len(moods)]}. "
-        f"Verb bank: {', '.join(verbs)}. "
-        "Do not start with any forbidden opener. "
-        "Avoid repeating any opener used in the previous output. "
-        "Never mention driver names or teams; use 'the car' only. "
-        "Use one concrete metric in the first 8 words."
-        f"Forbidden openers: {', '.join(forbidden_openers)}."
-    )
-    return (
-        f"{header}\n"
-        "Events in order (highest severity first):\n" + "\n".join(lines)
-        # + "\nStyle: "
-        # + style
-        + "\nTask: Produce commentary."
-    )
+    last3 = " ".join(recent_lines[-3:]).lower()
+    for p in fatigue_phrases:
+        if p in t.lower() and p in last3:
+            return False, f"phrase fatigue: {p}"
+
+    return True, "ok"
 
 
-events = read_events_csv("events.csv")
-bursts = group_events_by_time(events, max_gap_s=8.0, max_events_per_burst=10)
-outputs = []
+# =========================
+# Generation
+# =========================
 
-system = """
-You are an F1-style live race commentator with David Croft energy: short, sharp, punchy.
 
-Output ONE sentence only, 8-14 words, present tense, staccato rhythm.
-Use fragments and quick clauses. No filler. No hedging unless required below.
-Max TWO clauses. Avoid commas; use periods or semicolons only.
-Use exactly ONE number only. Prefer rounded numbers (e.g., 60 km/h, 5000 rpm, 15 seconds).
-If event.confidence < 0.60: hedge with "looks like" or "might have".
-If event.severity >= 0.70: use ONE dramatic phrase: "big moment", "massive scare", or "heavy hit".
-NEVER invent: positions, overtakes, penalties, lap record, pit crew, fans, the field, the pack, "reclaiming the lead".
-No driver/team names. If a name appears, replace with "the car".
-
-Prefer F1 vocabulary, some examples are the following, use sparingly:
-"late on the brakes", "locks up", "snaps oversteer", "rides the kerb", "cuts the apex",
-"gets it rotated", "traction on exit", "wriggle", "tidy recovery", "keeps it pointing straight".
-
-Example style (do NOT copy): "Late on the brakes. Very late. He's in trouble here."
-"""
-# BANNED words/phrases:
-# "shockwaves", "clatter", "speedster", "trajectory", "plunges", "looms", "scrambling".
-
-# End the sentence with " <END>"
-
-for i, burst in enumerate(bursts, start=1):
-    # Use burst index to rotate openers across prompts, not lap number.
-    prompt = build_burst_prompt(burst, i)
-    print(f"\n--- Burst {i} Prompt ---\n{prompt}\n")
-
+def llm_rewrite(llm, prompt: str, temperature: float = 0.65) -> str:
     out = llm.create_chat_completion(
         messages=[
-            {
-                "role": "system",
-                "content": system,
-            },
-            {
-                "role": "user",
-                "content": prompt,
-            },
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
         ],
-        max_tokens=100,
-        temperature=0.9,
+        max_tokens=90,
+        temperature=temperature,
         top_p=0.9,
-        stop=["<END>"],
-        repeat_penalty=1.15,
-        frequency_penalty=0.3,
-        presence_penalty=0.1,
+        repeat_penalty=1.12,
+        frequency_penalty=0.20,
+        presence_penalty=0.12,
     )
-
-    result = out["choices"][0]["message"]["content"].strip()
-    outputs.append(result)
-    # print(f"result {i} = '{result}'")
-
-print("\n".join(outputs), file=open("commentary.txt", "w"))
-
-# --- Aggregated event burst pipeline (updated) ---
-
-# import csv
-# import re
-# from dataclasses import dataclass
-# from typing import Dict, List, Tuple, Optional
+    return out["choices"][0]["message"]["content"].strip()
 
 
-# END_TOKEN = "<END>"
+def generate_line(
+    llm,
+    spec: Dict[str, Any],
+    state: NarrativeState,
+    recent_lines: List[str],
+    recent_openers: List[str],
+    max_retries: int = 8,
+) -> str:
+    skeleton = pick_skeleton(spec, state)
+    draft = render_skeleton(spec, skeleton)
+
+    if llm is None:
+        return draft
+
+    prompt = build_prompt(spec, state, draft, recent_openers)
+    last_text = draft
+
+    for attempt in range(max_retries):
+        temp = 0.60 + 0.05 * min(attempt, 3)
+        last_text = llm_rewrite(llm, prompt, temperature=temp)
+
+        ok, reason = validate_line(last_text, spec, recent_lines)
+        if ok:
+            return last_text
+
+        prompt = (
+            build_prompt(spec, state, draft, recent_openers)
+            + f"\nYour last output was invalid: {reason}.\n"
+            "Rewrite it to satisfy ALL rules exactly.\n"
+            "Reminder: one sentence; 12–22 words; no quotes; no exclamation; "
+            "do not start with the number; use the headline metric as the ONLY number."
+        )
+
+    return draft
 
 
-# @dataclass
-# class Event:
-#     event_type: str
-#     severity: float
-#     confidence: float
-#     timestamp_s: float
-#     lap: int
-#     sector: int
-#     dist_from_start_m: float
-#     track_pos: float
-#     speed_mps: float
-#     rpm: float
-#     gear: int
-#     longitudinal_accel_mps2: float
+# =========================
+# Pipeline
+# =========================
 
 
-# def read_events_csv(path: str) -> List[Event]:
-#     events: List[Event] = []
-#     with open(path, newline="") as f:
-#         reader = csv.DictReader(f)
-#         for row in reader:
-#             events.append(
-#                 Event(
-#                     event_type=row["event_type"].strip(),
-#                     severity=float(row["severity"]),
-#                     confidence=float(row["confidence"]),
-#                     timestamp_s=float(row["timestamp_s"]),
-#                     lap=int(float(row["lap"])),
-#                     sector=int(float(row["sector"])),
-#                     dist_from_start_m=float(row["dist_from_start_m"]),
-#                     track_pos=float(row["track_pos"]),
-#                     speed_mps=float(row["speed_mps"]),
-#                     rpm=float(row["rpm"]),
-#                     gear=int(float(row["gear"])),
-#                     longitudinal_accel_mps2=float(
-#                         row.get("longitudinal_accel_mps2") or 0.0
-#                     ),
-#                 )
-#             )
-#     return events
+def run_pipeline(
+    llm,
+    csv_path: str = "events.csv",
+    out_path: str = "commentary.txt",
+    window_s: float = 4.0,
+    max_gap_s: float = 1.5,
+    seed: int = 7,
+) -> List[str]:
+    random.seed(seed)
+
+    events = read_events_csv(csv_path)
+    bursts = group_events_by_window(events, window_s=window_s, max_gap_s=max_gap_s)
+
+    outputs: List[str] = []
+    openers: List[str] = []
+    state = NarrativeState()
+
+    for burst in bursts:
+        spec = burst_spec(burst)
+        state = update_state(state, spec)
+
+        line = generate_line(
+            llm=llm,
+            spec=spec,
+            state=state,
+            recent_lines=outputs,
+            recent_openers=openers,
+        )
+
+        outputs.append(line)
+        openers.append(line_opener(line, 3))
+        state = replace(state, last_opener=openers[-1])
+
+    Path(out_path).write_text("\n".join(outputs), encoding="utf-8")
+    return outputs
 
 
-# def group_events_by_time(
-#     events: List[Event], max_gap_s: float = 5.0, max_events_per_burst: int = 3
-# ) -> List[List[Event]]:
-#     """
-#     Groups by time using gap between consecutive events.
-#     Keeps bursts small; we will later compress further anyway.
-#     """
-#     if not events:
-#         return []
-#     events_sorted = sorted(events, key=lambda e: e.timestamp_s)
-#     bursts: List[List[Event]] = []
-#     current: List[Event] = [events_sorted[0]]
-
-#     for ev in events_sorted[1:]:
-#         gap = ev.timestamp_s - current[-1].timestamp_s
-#         if gap <= max_gap_s and len(current) < max_events_per_burst:
-#             current.append(ev)
-#         else:
-#             bursts.append(current)
-#             current = [ev]
-#     bursts.append(current)
-#     return bursts
-
-
-# def summarize_burst_window(burst: List[Event]) -> Tuple[str, Dict[str, float]]:
-#     times = [e.timestamp_s for e in burst]
-#     laps = [e.lap for e in burst]
-#     sectors = [e.sector for e in burst]
-#     dists = [e.dist_from_start_m for e in burst]
-#     tpos = [e.track_pos for e in burst]
-
-#     t_start, t_end = min(times), max(times)
-#     return (
-#         f"WINDOW time_s={t_start:.2f}->{t_end:.2f} dt={t_end - t_start:.2f}; "
-#         f"lap={min(laps)} sector={min(sectors)}; "
-#         f"dist_m={min(dists):.0f}->{max(dists):.0f}; "
-#         f"track_pos={min(tpos):.2f}->{max(tpos):.2f}",
-#         {"t_start": t_start, "t_end": t_end},
-#     )
-
-
-# def speed_kmh(ev: Event) -> float:
-#     return ev.speed_mps * 3.6
-
-
-# def rpm_rounded(ev: Event) -> int:
-#     return int(round(ev.rpm / 100.0) * 100)
-
-
-# def choose_headline_metric(ev: Event) -> str:
-#     """
-#     Pick ONE headline metric in code so the model doesn't number-vomit.
-#     """
-#     et = ev.event_type.upper()
-
-#     # For dramatic events, speed reads better in broadcast
-#     if et in {"SPIN", "OFFTRACK", "LOCKUP", "CRASH", "CONTACT"}:
-#         return f"speed_kmh={speed_kmh(ev):.0f}"
-
-#     # If it's acceleration/shift-ish, RPM tends to sound right
-#     if et in {"UPSHIFT", "DOWNSHIFT", "STRONGACCELERATION", "ACCEL", "ENGINE_SPIKE"}:
-#         return f"rpm={rpm_rounded(ev)}"
-
-#     # Otherwise default to speed
-#     return f"speed_kmh={speed_kmh(ev):.0f}"
-
-
-# def format_event_compact(ev: Event) -> str:
-#     """
-#     Compact, structured. No telemetry dump.
-#     """
-#     metric = choose_headline_metric(ev)
-#     time_rounded = round(ev.timestamp_s, 1)
-#     # Track position only matters if it's clearly off-line
-#     tpos = f"{ev.track_pos:.2f}"
-#     return (
-#         f"type={ev.event_type} sev={ev.severity:.2f} conf={ev.confidence:.2f} "
-#         f"time_s={time_rounded:.1f} {metric} gear={ev.gear} track_pos={tpos}"
-#     )
-
-
-# def select_key_events(burst: List[Event], k: int = 3) -> List[Event]:
-#     """
-#     Keep only the top-k “tellable” events.
-#     """
-#     ordered = sorted(burst, key=lambda e: (-e.severity, -e.confidence, e.timestamp_s))
-#     return ordered[:k]
-
-
-# def build_burst_prompt(burst: List[Event], burst_index: int) -> str:
-#     """
-#     Structured prompt: HEADLINE + SECONDARY + CONTEXT.
-#     No rotating moods/verb banks. Those were pushing the model into cringe.
-#     """
-#     header, _ = summarize_burst_window(burst)
-
-#     key = select_key_events(burst, k=3)
-#     headline = key[0]
-#     secondary = key[1:] if len(key) > 1 else []
-
-#     headline_line = format_event_compact(headline)
-#     secondary_lines = [format_event_compact(ev) for ev in secondary]
-
-#     # Give the model one job: narrate the headline, optionally mention recovery from secondary.
-#     prompt = [
-#         header,
-#         f"HEADLINE_EVENT {headline_line}",
-#     ]
-#     if secondary_lines:
-#         prompt.append("SECONDARY_EVENTS")
-#         prompt.extend(f"- {ln}" for ln in secondary_lines)
-
-#     # Minimal guidance that doesn't contradict the system prompt
-#     prompt.append(
-#         "RULES: Focus on HEADLINE_EVENT first; optionally mention the recovery implied by SECONDARY_EVENTS. "
-#         "Do not list multiple numbers. Use the headline metric already provided."
-#     )
-#     return "\n".join(prompt)
-
-
-# def clean_output(text: str) -> str:
-#     """
-#     Strip END token and surrounding whitespace.
-#     """
-#     return text.replace(END_TOKEN, "").strip()
-
-
-# def is_valid_commentary(text: str) -> bool:
-#     """
-#     Enforce constraints in code because the model will occasionally freestyle.
-#     """
-#     t = clean_output(text)
-
-#     # Must be one sentence-ish: allow one terminal punctuation.
-#     # This isn't perfect, but it kills most run-on disasters.
-#     if t.count(".") > 1 or t.count("!") > 1 or t.count("?") > 1:
-#         return False
-
-#     words = t.split()
-#     if not (10 <= len(words) <= 22):
-#         return False
-
-#     # Must contain at least one digit
-#     if not re.search(r"\d", t):
-#         return False
-
-#     # Avoid some known hallucination magnets, even if the system says so
-#     banned = ["lead", "reclaiming", "pit crew", "the field", "the pack", "fans"]
-#     lower = t.lower()
-#     if any(b in lower for b in banned):
-#         return False
-
-#     return True
-
-
-# # -------------------------
-# # System prompt (cleaned)
-# # -------------------------
-# system = f"""
-# You are an F1 live commentator in a David Croft-like style: fast, punchy, vivid, but factual.
-
-# Write ONE sentence, 12-20 words. Present tense. No quotes.
-# Include exactly ONE number with unit (km/h or RPM).
-# If confidence < 0.60: add a light hedge once ("seems", "looked like") but do NOT start the sentence with it.
-# If severity >= 0.70: include exactly one of: "big moment", "massive scare", "heavy hit".
-# Never mention: leader, positions, overtakes, penalties, pit crew, the pack/field, fans.
-# No driver/team names: always "the car".
-# End with <END>.
-
-# Examples:
-# Input: headline=LOCKUP; consequence=runs wide; recovery=recovers; number=198 km/h; sev=0.72; conf=0.66
-# Output: Late on the brakes at 198 km/h, big moment, it locks up and skips wide, then regains control. <END>
-
-# Input: headline=SPIN; consequence=rotation; recovery=catches it; number=142 km/h; sev=0.85; conf=0.80
-# Output: Massive scare at 142 km/h, the car loops it in a snap, but gathers it up before the gravel. <END>
-
-# Input: headline=OFFTRACK; consequence=wheel off; recovery=back on line; number=121 km/h; sev=0.55; conf=0.52
-# Output: The car, at 121 km/h, seems to dip a wheel off, but it tucks back in and carries on. <END>
-# """.strip()
-
-
-# # -------------------------
-# # Run bursts
-# # -------------------------
-# events = read_events_csv("events.csv")
-
-# # Keep time grouping generous; we compress key events anyway.
-# bursts = group_events_by_time(events, max_gap_s=8.0, max_events_per_burst=5)
-
-# outputs: List[str] = []
-
-# for i, burst in enumerate(bursts, start=1):
-#     prompt = build_burst_prompt(burst, i)
-#     print(f"\n--- Burst {i} Prompt ---\n{prompt}\n")
-
-#     # First attempt: normal creative
-#     out = llm.create_chat_completion(
-#         messages=[
-#             {"role": "system", "content": system},
-#             {"role": "user", "content": prompt},
-#         ],
-#         max_tokens=60,
-#         temperature=0.65,
-#         top_p=0.9,
-#         stop=[END_TOKEN],
-#         repeat_penalty=1.15,
-#         frequency_penalty=0.3,
-#         presence_penalty=0.1,
-#     )
-#     result = out["choices"][0]["message"]["content"].strip()
-
-#     # # Validate and retry once if needed
-#     # if not is_valid_commentary(result):
-#     #     repair_prompt = (
-#     #         prompt
-#     #         + "\nREPAIR: Your last output violated format. Output ONE sentence, 10-22 words, include exactly one number, end with "
-#     #         + END_TOKEN
-#     #     )
-#     #     out2 = llm.create_chat_completion(
-#     #         messages=[
-#     #             {"role": "system", "content": system},
-#     #             {"role": "user", "content": repair_prompt},
-#     #         ],
-#     #         max_tokens=60,
-#     #         temperature=0.30,
-#     #         top_p=0.9,
-#     #         stop=[END_TOKEN],
-#     #         repeat_penalty=1.2,
-#     #         frequency_penalty=0.35,
-#     #         presence_penalty=0.05,
-#     #     )
-#     #     result2 = out2["choices"][0]["message"]["content"].strip()
-#     #     result = result2 if is_valid_commentary(result2) else result
-
-#     outputs.append(clean_output(result))
-
-# with open("commentary.txt", "w") as f:
-#     f.write("\n".join(outputs))
+if __name__ == "__main__":
+    # Hook up your llm instance here.
+    # from llama_cpp import Llama
+    # llm = Llama.from_pretrained(...)
+    run_pipeline(llm, "events.csv", "commentary.txt")
+    raise SystemExit("Hook up llm and run run_pipeline().")
