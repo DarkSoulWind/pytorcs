@@ -1,0 +1,161 @@
+event_type,commentary
+START,Lights out and a clean launch from the front row.
+START,Good traction off the line as the field funnels into Turn 1.
+START,One car bogs down and immediately loses ground.
+START,Three wide into the braking zone—this is bold.
+START,Cold tyres and heavy fuel make it tricky early on.
+OVERTAKE,DRS open and he's closing rapidly down the straight.
+OVERTAKE,Pulls to the inside and commits late on the brakes.
+OVERTAKE,Side by side through the corner, neither backing out.
+OVERTAKE,He edges ahead at the apex and seals the move.
+OVERTAKE,That's decisive driving under pressure.
+DEFEND,Covers the inside line into the chicane.
+DEFEND,Forces the attacker the long way around.
+DEFEND,Stays firm on exit and keeps the position.
+DEFEND,Compromise on entry but strong traction out.
+DEFEND,That's textbook defensive placement.
+LOCKUP,Big lock-up under braking into Turn 5.
+LOCKUP,Front tyres screaming as he runs it deep.
+LOCKUP,Just about keeps it on the circuit.
+LOCKUP,That mistake costs a few car lengths.
+LOCKUP,He’ll feel that one in the tyres.
+SPIN,Rear steps out suddenly on corner exit.
+SPIN,Round he goes but avoids the barriers.
+SPIN,Quick reactions prevent a bigger incident.
+SPIN,That’s a costly rotation in the midfield.
+SPIN,He rejoins but drops several positions.
+PIT,He dives into the pit lane at the end of the lap.
+PIT,Four tyres ready and the crew poised.
+PIT,Clean stop and a tidy release.
+PIT,That’s a sharp turnaround under pressure.
+PIT,Rejoins into moderate traffic.
+PIT_SLOW,Bit of hesitation on the rear right.
+PIT_SLOW,That stop was slower than expected.
+PIT_SLOW,Time lost in the box could hurt later.
+PIT_SLOW,Traffic complicates the rejoin.
+PIT_SLOW,Strategy window narrowing now.
+FAST_LAP,Personal best in Sector 1.
+FAST_LAP,He’s pushing hard through the high-speed sweepers.
+FAST_LAP,That’s commitment through the esses.
+FAST_LAP,Engine note rising at full throttle.
+FAST_LAP,Gap coming down incrementally.
+GAP_UPDATE,Gap hovering around one second.
+GAP_UPDATE,Within striking distance now.
+GAP_UPDATE,The margin stabilises briefly.
+GAP_UPDATE,Pressure building with every lap.
+GAP_UPDATE,The leader cannot relax.
+SAFETY_CAR,Yellow flags waving in Sector 2.
+SAFETY_CAR,Car stranded off the racing line.
+SAFETY_CAR,Field bunching up rapidly.
+SAFETY_CAR,Strategy reset under neutralised conditions.
+SAFETY_CAR,This changes everything.
+RESTART,Safety Car pulls in this lap.
+RESTART,Leader controls the pace tightly.
+RESTART,Green flag racing resumes.
+RESTART,Immediate attack into Turn 1.
+RESTART,Chaos as positions shuffle again.
+TRACK_LIMITS,Wide on exit and that’s close to a warning.
+TRACK_LIMITS,Running out of road under pressure.
+TRACK_LIMITS,That may draw attention from the stewards.
+TRACK_LIMITS,Pushes the limits aggressively.
+TRACK_LIMITS,Every millimetre counts here.
+PENALTY,Five-second penalty applied for track limits.
+PENALTY,That sanction could swing the result.
+PENALTY,He’ll have to build a gap now.
+PENALTY,Stewards making their presence felt.
+PENALTY,The team reacts immediately on the radio.
+RAIN,Spots of rain reported in Sector 3.
+RAIN,Grip levels dropping slightly.
+RAIN,Drivers tiptoeing through the final corner.
+RAIN,That’s a delicate throttle application.
+RAIN,Conditions evolving quickly.
+BATTLE,Wheel to wheel through the chicane.
+BATTLE,Neither driver yielding an inch.
+BATTLE,Switchback attempt on exit.
+BATTLE,Brilliant awareness in close quarters.
+BATTLE,That’s intense midfield combat.
+TITLE,Championship tension rising visibly.
+TITLE,Every point matters at this stage.
+TITLE,High stakes driving at its finest.
+TITLE,No margin for error now.
+TITLE,This could define the season.
+TYRES,Tyre degradation becoming apparent.
+TYRES,Rear grip fading under load.
+TYRES,Managing the stint carefully.
+TYRES,Front end starting to wash out.
+TYRES,That compound is under strain.
+FUEL,Engine modes adjusted for efficiency.
+FUEL,Short shifting down the straight.
+FUEL,Conserving fuel in clean air.
+FUEL,Strategic lift and coast applied.
+FUEL,That could impact attack potential.
+OVERTAKE,He lines up the move patiently.
+OVERTAKE,Outbrakes him convincingly.
+OVERTAKE,Beautiful timing at the apex.
+OVERTAKE,Seizes the opportunity decisively.
+OVERTAKE,That’s clinical execution.
+DEFEND,Holds firm under immense pressure.
+DEFEND,Covers the inside yet again.
+DEFEND,Forces a compromised exit for the chaser.
+DEFEND,Disciplined defensive approach.
+DEFEND,Experience showing there.
+MISTAKE,Wide at the hairpin.
+MISTAKE,Over-rotation mid-corner.
+MISTAKE,Misses the apex slightly.
+MISTAKE,That error invites pressure.
+MISTAKE,Small slip with big consequences.
+SECTOR,Strong middle sector performance.
+SECTOR,Time gained in the braking zone.
+SECTOR,Confidence through the fast left-hander.
+SECTOR,Precise line through the final corner.
+SECTOR,That’s tidy and efficient.
+CLOSE_FINISH,Final lap and the gap is shrinking.
+CLOSE_FINISH,He’s right on the gearbox now.
+CLOSE_FINISH,Last corner drama unfolding.
+CLOSE_FINISH,Drag race to the line.
+CLOSE_FINISH,Photo finish potential here.
+WIN,Chequered flag falls at Abu Dhabi.
+WIN,A controlled drive to the victory.
+WIN,Execution flawless under pressure.
+WIN,That’s a statement performance.
+WIN,Hard-earned triumph tonight.
+PODIUM,Champagne sprays in parc fermé.
+PODIUM,Emotions running high on the podium.
+PODIUM,A season-defining result.
+PODIUM,Relief etched across the team.
+PODIUM,Celebrations well deserved.
+LAPPED,Blue flags waving ahead.
+LAPPED,Traffic complicates the pursuit.
+LAPPED,Leader slices through efficiently.
+LAPPED,Backmarker yields promptly.
+LAPPED,That could influence the gap.
+ENGINE,Power unit sounding healthy.
+ENGINE,Strong acceleration out of slow corners.
+ENGINE,Top speed competitive today.
+ENGINE,Smooth delivery down the straight.
+ENGINE,No signs of trouble mechanically.
+INCIDENT,Contact in the midfield pack.
+INCIDENT,Carbon fibre scattered on track.
+INCIDENT,Front wing damage visible.
+INCIDENT,He limps back toward the pits.
+INCIDENT,That’s a costly collision.
+RECOVERY,Claws back time steadily.
+RECOVERY,Composed drive after early setback.
+RECOVERY,Building rhythm once more.
+RECOVERY,Confidence returning lap by lap.
+RECOVERY,That’s resilience on display.
+QUALI_PACE,That lap would challenge for pole.
+QUALI_PACE,He’s extracting maximum grip.
+QUALI_PACE,Precision braking into every corner.
+QUALI_PACE,That’s a banker lap delivered.
+QUALI_PACE,Strong benchmark set.
+FINAL_LAP,Into the final tour of the circuit.
+FINAL_LAP,Every corner now decisive.
+FINAL_LAP,Last chance to make it count.
+FINAL_LAP,No mistakes permitted.
+FINAL_LAP,All eyes on the leader.
+CHEQUERED,Chequered flag waves emphatically.
+CHEQUERED,Season concludes under the lights.
+CHEQUERED,A dramatic finale to remember.
+CHEQUERED,Points secured at the final round.
+CHEQUERED,That wraps up the Abu Dhabi Grand Prix.
