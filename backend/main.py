@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from llama_cpp import Llama
 
-from pytocl.events import detect_events
+from pytocl.events import detect_events, enrich_telemetry_progress
 from pytocl.laps import summarize_laps
 from llm_commentary import run_pipeline_stream as run_llm_pipeline_stream
 from audio_commentary import run_pipeline_stream as run_audio_pipeline_stream
@@ -427,7 +427,7 @@ async def shutdown_worker() -> None:
 
 @app.get("/")
 async def root():
-    return {"message": "Lowkirkenuinely might be cooked"}
+    return {"message": "Salaam"}
 
 
 @app.post("/api/sessions")
@@ -441,7 +441,6 @@ async def upload_csv(file: UploadFile = File(...), name: str | None = Form(None)
 
     try:
         csv_text = raw_bytes.decode("utf-8")
-        text_stream = io.StringIO(csv_text)
     except UnicodeDecodeError as exc:
         raise HTTPException(
             status_code=400, detail="CSV must be UTF-8 encoded"
@@ -469,6 +468,9 @@ async def upload_csv(file: UploadFile = File(...), name: str | None = Form(None)
         ) from exc
 
     try:
+        telemetry_df = enrich_telemetry_progress(telemetry_df)
+        telemetry_df.to_csv(file_path, index=False)
+
         laps_df = summarize_laps(telemetry_df.copy())
         laps_path = session_dir / "laps.csv"
         laps_df.to_csv(laps_path, index=False)
@@ -482,7 +484,8 @@ async def upload_csv(file: UploadFile = File(...), name: str | None = Form(None)
             detail=f"Could not generate lap summaries/events from telemetry: {exc}",
         ) from exc
 
-    reader = csv.DictReader(text_stream)
+    telemetry_csv_text = telemetry_df.to_csv(index=False)
+    reader = csv.DictReader(io.StringIO(telemetry_csv_text))
     rows = list(reader)
 
     if not reader.fieldnames:

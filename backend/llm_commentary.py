@@ -977,6 +977,8 @@ Never invent: positions, pit stops, penalties, safety cars, DRS, records, "the p
 No driver/team names.
 Do not call the driver "pilot".
 Never write broken conjunctions like "then and" or "and and".
+Never include meta labels or production notes like "(Tone: calm)", "[urgent]", "Tone target:", or stage directions.
+Output commentary only; no bracketed/parenthetical instructions.
 
 If Hedge required is True: include exactly one hedge phrase: "looks like" or "might have".
 If Hedge required is False but Soft hedge is True: hedging is optional.
@@ -1046,7 +1048,8 @@ def build_prompt(
         "If Tone target is urgent: make it sharper than calm, but no drama phrase.\n"
         "If Tone target is dramatic: use one strong impact phrase and heightened urgency.\n"
         "If Intensity peak is True, capitalize ONLY one short opening clause (2-8 words).\n"
-        "Do NOT write the whole sentence in all caps."
+        "Do NOT write the whole sentence in all caps.\n"
+        "Do NOT include any meta/style tags or bracketed notes (for example '(Tone: calm)' or '[urgent]')."
     )
 
 
@@ -1077,6 +1080,9 @@ def line_opener_key(text: str, n: int = 2) -> str:
 
 def postprocess_line(text: str) -> str:
     t = re.sub(r"\s{2,}", " ", text.strip())
+
+    # Remove accidental meta/style tags from model output, e.g. "(Tone: calm)".
+    t = re.sub(r"\s*[\(\[]\s*tone\s*:\s*[^\)\]]*[\)\]]\s*", " ", t, flags=re.IGNORECASE)
 
     # Normalize capitalization
     if t and t[0].islower():
@@ -1112,6 +1118,9 @@ def postprocess_line(text: str) -> str:
     t = re.sub(r"\brpm\b", "RPM", t, flags=re.IGNORECASE)
     t = re.sub(r"\bkm/h\b", "km/h", t, flags=re.IGNORECASE)
 
+    # Final spacing cleanup after all transforms.
+    t = re.sub(r"\s{2,}", " ", t)
+    t = re.sub(r"\s+([,.])", r"\1", t)
     return t.strip()
 
 
@@ -1136,6 +1145,12 @@ def validate_line(
         return False, "too many sentences"
     if re.search(r"\bthen and\b", tl) or re.search(r"\band and\b", tl):
         return False, "broken conjunction"
+    if re.search(r"\bton(e|al)\s*:", tl):
+        return False, "contains meta tone label"
+    if re.search(r"\btone target\b", tl):
+        return False, "contains prompt meta text"
+    if re.search(r"[\(\[][^\)\]]{0,60}\b(tone|urgent|dramatic|calm)\b[^\)\]]*[\)\]]", tl):
+        return False, "contains bracketed meta note"
     alpha = re.sub(r"[^A-Za-z]+", "", t)
     if len(alpha) >= 10 and t == t.upper():
         return False, "whole line caps not allowed"
@@ -1389,6 +1404,8 @@ def run_pipeline_stream(
             style_examples=examples,
         )
         line = emphasize_intensity_clause(line, spec)
+        # Re-apply output normalization after optional emphasis uppercasing.
+        line = postprocess_line(line)
 
         words = re.findall(r"\b[\w']+\b", line)
         duration_s = max(1.2, len(words) / speaking_wps)

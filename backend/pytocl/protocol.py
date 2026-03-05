@@ -5,7 +5,7 @@ import os
 import pandas as pd
 
 from pytocl.car import State as CarState
-from pytocl.events import detect_events
+from pytocl.events import detect_events, enrich_telemetry_progress
 from pytocl.laps import summarize_laps
 from pytocl.driver import Driver
 
@@ -101,6 +101,7 @@ class Client:
                 self._output_path, "telemetry_samples.csv"
             )
             telemetry_samples_df = pd.DataFrame(self._samples)
+            telemetry_samples_df = enrich_telemetry_progress(telemetry_samples_df)
             telemetry_samples_df.to_csv(
                 telemetry_samples_path, index=False, chunksize=200_000
             )

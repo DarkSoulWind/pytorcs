@@ -184,6 +184,60 @@ def _event_confidence(score: float) -> float:
     return _bounded(score)
 
 
+def _estimate_track_length_m(df: pd.DataFrame) -> Optional[float]:
+    """Estimate full lap length in meters from max distance_from_start."""
+    if "distance_from_start" in df.columns:
+        dist = pd.to_numeric(df["distance_from_start"], errors="coerce")
+    elif "dist_from_start_m" in df.columns:
+        dist = pd.to_numeric(df["dist_from_start_m"], errors="coerce")
+    else:
+        return None
+    if not dist.notna().any():
+        return None
+    track_length = float(dist.max())
+    return track_length if track_length > 0 else None
+
+
+def enrich_telemetry_progress(df: pd.DataFrame) -> pd.DataFrame:
+    """Add track_length_m and lap_progress_pct to telemetry rows."""
+    out = df.copy()
+
+    if "distance_from_start" in out.columns:
+        out["dist_from_start_m"] = pd.to_numeric(
+            out["distance_from_start"], errors="coerce"
+        )
+    elif "distance_raced" in out.columns:
+        out["dist_from_start_m"] = pd.to_numeric(out["distance_raced"], errors="coerce")
+    else:
+        out["dist_from_start_m"] = pd.NA
+
+    track_length_m = _estimate_track_length_m(out)
+    if track_length_m and track_length_m > 0:
+        dist_raced = pd.to_numeric(out.get("distance_raced"), errors="coerce")
+        dist_start = pd.to_numeric(out.get("dist_from_start_m"), errors="coerce")
+        valid_pair = dist_raced.notna() & dist_start.notna()
+        if valid_pair.any():
+            first_idx = valid_pair[valid_pair].index[0]
+            offset_m = (
+                float(dist_start.loc[first_idx])
+                - (float(dist_raced.loc[first_idx]) % float(track_length_m))
+            ) % float(track_length_m)
+            progress_fraction = (
+                (dist_raced + offset_m) % float(track_length_m)
+            ) / float(track_length_m)
+        else:
+            progress_fraction = (dist_start / float(track_length_m)) % 1.0
+        out["lap_progress_pct"] = (
+            progress_fraction * 100.0
+        ).clip(lower=0.0, upper=100.0)
+        out["track_length_m"] = float(track_length_m)
+    else:
+        out["lap_progress_pct"] = pd.NA
+        out["track_length_m"] = pd.NA
+
+    return out
+
+
 def _filter_events(
     events: List[dict],
     min_interval_s: float,
@@ -264,14 +318,7 @@ def detect_events(
     df["longitudinal_accel"] = df["speed_x"].diff().fillna(0) / dt.replace(0, 1)
     rpm_delta = df["rpm"].diff().fillna(0)
 
-    if "distance_from_start" in df.columns:
-        df["dist_from_start_m"] = pd.to_numeric(
-            df["distance_from_start"], errors="coerce"
-        )
-    elif "distance_raced" in df.columns:
-        df["dist_from_start_m"] = pd.to_numeric(df["distance_raced"], errors="coerce")
-    else:
-        df["dist_from_start_m"] = pd.NA
+    df = enrich_telemetry_progress(df)
 
     if "distance_from_center" in df.columns:
         df["track_pos"] = pd.to_numeric(df["distance_from_center"], errors="coerce")
@@ -283,11 +330,9 @@ def detect_events(
     else:
         df["lap"] = pd.NA
 
-    if "dist_from_start_m" in df.columns and df["dist_from_start_m"].notna().any():
-        track_length = df["dist_from_start_m"].max()
-        sector_length = (
-            track_length / 3.0 if track_length and track_length > 0 else None
-        )
+    track_length_m = _estimate_track_length_m(df)
+    if track_length_m:
+        sector_length = track_length_m / 3.0
         if sector_length:
             sector_float = (df["dist_from_start_m"] / sector_length).clip(lower=0)
             sector_index = sector_float.apply(
@@ -299,6 +344,11 @@ def detect_events(
             df["sector"] = pd.NA
     else:
         df["sector"] = pd.NA
+
+    if "track_length_m" not in df.columns:
+        df["track_length_m"] = pd.NA
+    if "lap_progress_pct" not in df.columns:
+        df["lap_progress_pct"] = pd.NA
 
     events: List[dict] = []
     car_ahead_close = pd.Series(False, index=df.index)
@@ -452,6 +502,8 @@ def detect_events(
                 "lap",
                 "sector",
                 "dist_from_start_m",
+                "track_length_m",
+                "lap_progress_pct",
                 "track_pos",
                 "event_type",
                 "severity",
@@ -511,6 +563,8 @@ def detect_events(
             "lap": enriched.get("lap"),
             "sector": enriched.get("sector"),
             "dist_from_start_m": enriched.get("dist_from_start_m"),
+            "track_length_m": enriched.get("track_length_m"),
+            "lap_progress_pct": enriched.get("lap_progress_pct"),
             "track_pos": enriched.get("track_pos"),
             "event_type": events_df["event"].apply(_event_type),
             "severity": severity,
