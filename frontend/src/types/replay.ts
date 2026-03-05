@@ -59,6 +59,9 @@ export interface TelemetryRow {
 	wheel_velocities: string;
 	z: string;
 	focused_distances_from_edge: string;
+	dist_from_start_m: string;
+	lap_progress_pct: string;
+	track_length_m: string;
 }
 
 export interface Events {
@@ -75,6 +78,8 @@ export interface EventRow {
 	lap: string;
 	sector: string;
 	dist_from_start_m: string;
+	track_length_m: string;
+	lap_progress_pct: string;
 	track_pos: string;
 	event_type: string;
 	severity: string;
